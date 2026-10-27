@@ -7,7 +7,7 @@ An AI-powered audio transcription web application built with React, TypeScript, 
 - **Audio Upload:** Upload supported audio files, including MP3, WAV, and AAC, subject to browser decoding support.
 - **Automatic Audio Segmentation:** Divide recordings into 7-second segments for sequential processing.
 - **AI-Powered Transcription:** Use the Gemini API to transcribe each audio segment independently.
-- **Real-Time Progress Tracking:** Display processed segments, total segments, and completion percentage.
+- **Real-Time Progress Tracking:** Display processed segments,total segments, and completion percentage.
 - **Segment-Level Results:** Track transcription status for individual segments, including pending, processing, completed, and failed states.
 - **Error Handling:** Handle segment-level failures while allowing the remaining segments to continue processing.
 - **Responsive Interface:** Provide a clean interface for uploading audio, monitoring progress, and viewing transcription results.
