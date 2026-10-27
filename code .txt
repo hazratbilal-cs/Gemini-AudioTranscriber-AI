@@ -1,0 +1,211 @@
+
+import React, { useState, useRef, useCallback } from 'react';
+import { Layout } from './components/Layout';
+import { TranscriptionView } from './components/TranscriptionView';
+import { TranscriptionSegment, ProcessingState } from './types';
+import { sliceAudioBuffer, audioBufferToWavBase64 } from './services/audioService';
+import { transcribeSegment } from './services/geminiService';
+
+const SEGMENT_DURATION = 7; // seconds
+
+const App: React.FC = () => {
+  const [segments, setSegments] = useState<TranscriptionSegment[]>([]);
+  const [state, setState] = useState<ProcessingState>({
+    isProcessing: false,
+    totalSegments: 0,
+    processedCount: 0,
+    currentFile: null,
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const processAudioFile = async (file: File) => {
+    try {
+      setError(null);
+      setState({
+        isProcessing: true,
+        totalSegments: 0,
+        processedCount: 0,
+        currentFile: file.name,
+      });
+      setSegments([]);
+
+      // 1. Decode Audio
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const arrayBuffer = await file.arrayBuffer();
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+      // 2. Prepare segments
+      const duration = audioBuffer.duration;
+      const numSegments = Math.ceil(duration / SEGMENT_DURATION);
+      
+      const initialSegments: TranscriptionSegment[] = [];
+      for (let i = 0; i < numSegments; i++) {
+        initialSegments.push({
+          id: i + 1,
+          startTime: i * SEGMENT_DURATION,
+          endTime: Math.min((i + 1) * SEGMENT_DURATION, Math.round(duration * 10) / 10),
+          text: '',
+          status: 'pending'
+        });
+      }
+      
+      setSegments(initialSegments);
+      setState(prev => ({ ...prev, totalSegments: numSegments }));
+
+      // 3. Process segments sequentially
+      for (let i = 0; i < numSegments; i++) {
+        // Update status to processing
+        setSegments(prev => prev.map((s, idx) => idx === i ? { ...s, status: 'processing' } : s));
+
+        try {
+          const start = i * SEGMENT_DURATION;
+          const end = Math.min((i + 1) * SEGMENT_DURATION, duration);
+          const currentDuration = end - start;
+          
+          // Slice
+          const slice = sliceAudioBuffer(audioBuffer, start, currentDuration);
+          
+          // Convert to Wav Base64
+          const base64 = await audioBufferToWavBase64(slice);
+          
+          // Transcribe using Gemini
+          const transcript = await transcribeSegment(base64, i + 1);
+          
+          setSegments(prev => prev.map((s, idx) => idx === i ? { 
+            ...s, 
+            status: 'completed', 
+            text: transcript 
+          } : s));
+          
+          setState(prev => ({ ...prev, processedCount: i + 1 }));
+        } catch (err) {
+          console.error(`Failed segment ${i + 1}`, err);
+          setSegments(prev => prev.map((s, idx) => idx === i ? { ...s, status: 'error' } : s));
+        }
+      }
+
+      setState(prev => ({ ...prev, isProcessing: false }));
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || "An unexpected error occurred while processing the audio.");
+      setState(prev => ({ ...prev, isProcessing: false }));
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processAudioFile(file);
+    }
+  };
+
+  const triggerUpload = () => {
+    fileInputRef.current?.click();
+  };
+
+  return (
+    <Layout>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Left Column: Control Panel */}
+        <div className="lg:col-span-1 space-y-6">
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+            <h3 className="text-lg font-bold text-slate-800 mb-4">Input Source</h3>
+            
+            <div 
+              onClick={!state.isProcessing ? triggerUpload : undefined}
+              className={`border-2 border-dashed rounded-xl p-8 text-center transition-all cursor-pointer ${
+                state.isProcessing 
+                  ? 'border-slate-200 bg-slate-50 cursor-not-allowed' 
+                  : 'border-blue-200 hover:border-blue-400 hover:bg-blue-50 bg-white'
+              }`}
+            >
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                onChange={handleFileChange} 
+                className="hidden" 
+                accept="audio/*"
+              />
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
+                  <i className={`fas ${state.isProcessing ? 'fa-spinner fa-spin' : 'fa-cloud-upload-alt'} text-xl`}></i>
+                </div>
+                <div>
+                  <p className="font-semibold text-slate-700">
+                    {state.currentFile || "Select Audio File"}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1">MP3, WAV, AAC supported</p>
+                </div>
+              </div>
+            </div>
+
+            {state.isProcessing && (
+              <div className="mt-6 space-y-2">
+                <div className="flex items-center justify-between text-xs font-bold text-slate-500 mb-1">
+                  <span>PROCESSING STATUS</span>
+                  <span>{Math.round((state.processedCount / state.totalSegments) * 100)}%</span>
+                </div>
+                <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                  <div 
+                    className="bg-blue-600 h-full transition-all duration-500 ease-out"
+                    style={{ width: `${(state.processedCount / state.totalSegments) * 100}%` }}
+                  />
+                </div>
+                <p className="text-xs text-slate-500 text-center">
+                  Segmenting and transcribing: {state.processedCount} / {state.totalSegments}
+                </p>
+              </div>
+            )}
+
+            {error && (
+              <div className="mt-4 p-3 bg-red-50 text-red-600 rounded-lg text-sm flex gap-2 items-start">
+                <i className="fas fa-exclamation-circle mt-0.5"></i>
+                <p>{error}</p>
+              </div>
+            )}
+          </div>
+
+          <div className="bg-blue-600 p-6 rounded-2xl shadow-lg text-white">
+            <h4 className="font-bold mb-2 flex items-center gap-2">
+              <i className="fas fa-info-circle"></i>
+              How it works
+            </h4>
+            <ul className="text-sm space-y-3 opacity-90">
+              <li className="flex gap-2">
+                <span className="w-5 h-5 flex-shrink-0 bg-white/20 rounded-full flex items-center justify-center text-[10px]">1</span>
+                Your audio is loaded and segmented into 7-second slices.
+              </li>
+              <li className="flex gap-2">
+                <span className="w-5 h-5 flex-shrink-0 bg-white/20 rounded-full flex items-center justify-center text-[10px]">2</span>
+                Each slice is processed independently for maximum precision.
+              </li>
+              <li className="flex gap-2">
+                <span className="w-5 h-5 flex-shrink-0 bg-white/20 rounded-full flex items-center justify-center text-[10px]">3</span>
+                Gemini AI transcribes the spoken text segment-by-segment.
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        {/* Right Column: Results */}
+        <div className="lg:col-span-2">
+          {segments.length > 0 ? (
+            <TranscriptionView segments={segments} />
+          ) : (
+            <div className="bg-white border border-slate-200 border-dashed rounded-3xl h-full min-h-[400px] flex flex-col items-center justify-center text-slate-400 p-8">
+              <i className="fas fa-file-audio text-6xl mb-4 opacity-20"></i>
+              <p className="text-lg font-medium">No audio processed yet</p>
+              <p className="text-sm max-w-xs text-center mt-2">
+                Upload a recording to start the automated 7-second transcription process.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    </Layout>
+  );
+};
+
+export default App;
